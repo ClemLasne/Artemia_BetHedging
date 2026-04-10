@@ -9,9 +9,9 @@ This repository includes all the scripts and commands used by the authors. If an
 1. [Population Matrix Modelling](Population_Matrix_Modelling) folder
 
    Contains:
-   - the transition matrix formula (Eq 1 in manuscript) [R code](Population_Matrix_Modelling/Artemia_Matrix_Model_Formula.rmd)
-   - the matrix model [R code](Population_Matrix_Modelling/Artemia_Matrix_Population_Model.rmd) used for the simulations
-   - the simulations outputs plots [R code](Population_Matrix_Modelling/Artemia_Matrix_Population_Model_Simulations_Outputs.md)
+   - the R code to the transition matrix [formula](Population_Matrix_Modelling/Artemia_Matrix_Model_Formula.rmd) (Eq 1 in manuscript)
+   - the R code to run the matrix model [simulations](Population_Matrix_Modelling/Artemia_Matrix_Population_Model.rmd)
+   - the R code to [plot](Population_Matrix_Modelling/Artemia_Matrix_Population_Model_Simulations_Outputs.md) the matrix model simulations outputs 
    
 3. [Gene expression analysis](link_to.md)
 4. [Reproductive mode analysis](link_to.md)
