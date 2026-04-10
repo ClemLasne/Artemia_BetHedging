@@ -1,0 +1,585 @@
+
+
+---
+output:
+  github_document: default # put github_document *before* html_document to knit both
+  html_document: default
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding,
+  output_format = "all") })
+--- 
+
+# Artemia Matrix Population Model v6.0 Scen1.1
+
+## Summary version changes: 
+
+- Modified base parameter values for NBS, CBS
+- Reorder matrices for readability and consistency with manuscript
+
+## Notes
+
+### To include later
+
+- 
+
+
+### Environmental Context Scenarios for Bet-hedging
+Filenames "Scen1.1" refer to scenarios
+
+#### Reduced stochasticity
+1.1 Deterministic, demog.stoch = 0, env.stoch = 0, cat.stoch = 0 
+1.2 cat.stoch = 0, demog.stoch = 1, env.stoch = 1, MEAN.switch = 6, SD.switch = 0 
+
+#### Variability and predictability of interval between catastrophes
+
+2.1. MEAN.cat = 36, SD.cat = 0, MEAN.switch = 6, SD.switch = 0 
+2.2. MEAN.cat = 36, SD.cat = 3, MEAN.switch = 6, SD.switch = 0 
+2.3. MEAN.cat = 36, SD.cat = 6, MEAN.switch = 6, SD.switch = 0 
+2.4. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 6, SD.switch = 0 
+2.5. MEAN.cat = 24, SD.cat = 3, MEAN.switch = 6, SD.switch = 0 
+2.6. MEAN.cat = 24, SD.cat = 6, MEAN.switch = 6, SD.switch = 0  
+2.7. MEAN.cat = 12, SD.cat = 0, MEAN.switch = 6, SD.switch = 0 
+2.8. MEAN.cat = 12, SD.cat = 3, MEAN.switch = 6, SD.switch = 0 
+2.9. MEAN.cat = 12, SD.cat = 6, MEAN.switch = 6, SD.switch = 0
+
+#### Variability and predictability of interval of switching between favourable and unfavourable conditions
+3.1. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 3, SD.switch = 0 
+3.2. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 3, SD.switch = 1 
+3.3. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 3, SD.switch = 2 
+3.4. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 6, SD.switch = 0 
+3.5. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 6, SD.switch = 1 
+3.6. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 6, SD.switch = 2 
+3.7. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 9, SD.switch = 0 
+3.8. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 9, SD.switch = 1
+3.9. MEAN.cat = 24, SD.cat = 0, MEAN.switch = 9, SD.switch = 2 
+
+
+
+```{r}
+### Packages ###
+
+library(tidyverse)
+library(truncnorm)
+library(popbio)
+```
+
+
+## Model Setup/Structure
+```{r}
+# Each matrix time-step is 5 days for each brood produced.
+# Different matrices are applied sequentially according to environmental state.
+# Catastrophic and post-catastrophic steps are "timeless" as population is in stasis during drought 
+# Catastrophe results in cyst-only survival.
+# This should always be followed by the post-catastrophic matrix where cysts hatch.
+# Cysts do not hatch thereafter in wet conditions again.
+
+# Model assumes Census -> Survival -> Growth -> Reproduction -> Census
+
+
+# # # # # # Projection-level Parameters # # # # # # # 
+
+# Mean frequency and period variation of catastrophic events
+MEAN.cat <-24 # mean length of wet season in broods, 36*5-day broods = ~6-months wet
+SD.cat <- 0 # standard deviation around wet season length i.e. "predictability".
+
+# Mean frequency and period variation of favourable/unfavourable environments
+MEAN.switch <-9 # mean length of favourable and unfavourable periods in broods, 6 broods ~1-month
+SD.switch <- 2 # standard deviation around favourable/unfavourable period length i.e. predictability
+
+
+# # # # # # Toggle switches # # # # # # # # 
+
+demog.stoch <- 1 # To be toggled to 1 if running model with demographic stochasticty, 0 without.
+env.stoch <- 1 # To be toggled to 1 if running model with environmental stochasticty, 0 without.
+# i.e. favourable, unfavourable and catastrophic environments.
+# Uses "favourable" matrix without environmental stochasticity. (should be at PCF = 0, PNF = 1?)
+cat.stoch <- 1 # To be toggled to 1 if running model with catastrophic events, 0 without.
+# Catastrophic environment toggle only relevant if env.stoch = 1. 
+
+
+# # # # # # Simulations # # # # # # # # # #
+
+nsims <- 200
+
+
+```
+
+
+## Model Projection ##
+```{r}
+
+# Bet-hedging values
+# Changes PCF in favourable conditions only (and in lagging response) in model
+# i.e. Proportion of females producing cysts, despite favourable conditions "just in case"
+# No bet-hedging = 0 and bet-hedging = 0.5 PCF
+hedge_value <- c(1.0, 0.8, 0.6, 0.4, 0.2, 0.0) 
+hedge.out <- list()
+
+# Bet-hedging Scenario For-Loop for degrees of Bet-hedging
+for(k in 1:length(hedge_value)){
+
+sim <- 0
+sim.out <- list()
+
+  # Simulations For-loop for n simulations
+  for(j in 1:nsims){
+  
+  sim <- sim + 1 # Current simulation
+
+  
+  # # # # # # Initiation # # # # # # # 
+  
+  trans.mat <- matrix(0,nrow=5, ncol=5) # Empty matrix
+  rownames(trans.mat) <- c("C","N1","N2","N3","A")
+  colnames(trans.mat) <- c("C","N1","N2","N3","A")
+    
+  P0 <- c(10000,10000,10000,10000,10000) # Arbitrary starting population sizes.
+  
+  
+  # # # # # # Loop Counters # # # # # #
+  
+  # These four variables are updated with every every matrix multiplication
+  Pt <- P0 # Population at time t
+  t <- 0 # Current time t
+  n.t <- 0 # Record of time steps 
+  Pop_size <- P0 # Record of population sizes
+  lambda <- 0 # Current population growth rate
+  lambda.t <- 0
+  
+  
+  t.max <- 500 # Number of time steps to project
+  env.curr <- "catastrophe" # Start with this to initiate projection correctly # Current environment.
+  env.hist <- c(NA) # Environment history
+  brood.cycle <- 0 # Brood cycle number in current wet period
+  brood.hist <- c(0) # Brood cycle history
+  time.since.catastrophe <- 0 # Counter to track time since the last catastrophic drought
+  time.since.switch <- 0 # Time since environment switched between favourable/unfavourable
+  response.broods <- 2 # Lag-time for shift in reproductive mode after environmental change in n brood cycles
+
+
+  # Single Projection For-loop for t-time-steps
+  for(i in 1:t.max){
+    
+    # # # # # # # # # # # # # # # # # # # # # # # # #  
+    # # # # # # Transition matrices # # # # # # # # #
+    # # # # # # # # # # # # # # # # # # # # # # # # #  
+  
+    # Common matrix structure #
+    ### Equal Matrix ### 
+    #(used only as a structural basis for common parameter values for other model matrices)
+    #(not used in model)
+    # Parameters and Transition matrix in normal wet conditions for 
+    # Equal Nauplii and Cysts production
+    
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      CBS <- 80 # Fecundity of cysts/brood
+      NBS <- 100 # Fecundity of Nauplii/brood
+      OSR <- 0.5 # Operational sex ratio - considers only female portion of population
+      PCF <- 0.5 # Proportion of females reproducing with Cysts each brood (Cyst Reproductive Mode)
+      PNF <- 1-PCF # Proportion of females reproducing with Nauplii each brood (Nauplii Reproductive Mode)
+      ASR <- 0.8 # Adult survival rate between 5-day brood cycles
+      NSR <- 0.7 # Nauplii survival rates between 5-day brood cycles
+      NGR <- 1 # Nauplii transition rates between 5-day brood cycles
+      CSR <- 0.995 # Cyst survival rate between 5-day brood cycles
+      CHR <- 0 # Cyst hatching rate
+    }else{ # When demographic stochasticity is toggled on (1) 
+      CBS <- round(rnorm(1,80,4)) # Fecundity of cysts/brood
+      NBS <- round(rnorm(1,100,5)) # Fecundity of Nauplii/brood
+      OSR <- rtruncnorm(1,0,1,0.5,0.03) # Operational sex ratio - considers only female portion of population
+      PCF <- rtruncnorm(1,0,1,0.5,0.03) # Proportion of females reproducing with Cysts each brood (Cyst   Reproductive Mode)
+      PNF <- 1-PCF # Proportion of females reproducing with Nauplii each brood (Nauplii Reproductive Mode)
+      ASR <- rtruncnorm(1,0,1,0.9,0.02) # Adult survival rate between 5-day brood cycles
+      NSR <- rtruncnorm(1,0,1,0.7,0.02) # Nauplii survival rates between 5-day brood cycles
+      NGR <- 1 # Nauplii transition rates between 5-day brood cycles
+      CSR <- rtruncnorm(1,0,1,0.995,0.001) # Cyst survival rate between 5-day brood cycles
+      CHR <- 0 # Cyst hatching rate
+    }
+    
+    TM.equ <- trans.mat # Populates empty matrix with parameter values
+    
+    TM.equ[1,1] <- CSR * (1-CHR) # Cysts remaining in cyst bank
+    TM.equ[1,5] <- ((ASR * CBS) + (NSR * NGR * CBS)) * PCF * OSR # Adult fecundity plus fecundity of N3   Nauplii that matured   and reproduced between censuses.
+    TM.equ[2,5] <- ((ASR * NBS) + (NSR * NGR * NBS)) * PNF * OSR # Adult fecundity plus fecundity of N3   Nauplii that matured   and reproduced between censuses.
+    TM.equ[2,1] <- CSR * CHR # C to N1
+    TM.equ[3,2] <- NSR * NGR # N1 to N2
+    TM.equ[4,3] <- NSR * NGR # N2 to N3
+    TM.equ[5,4] <- NSR * NGR # N3 to A
+    TM.equ[5,5] <- ASR # Mature adult pool
+    
+
+    # Matrix 1 #
+    ### Nauplii-favoured Reproduction Matrix (favourable wet conditions) ###
+    # Bigger proportion of naupliar broods compared to cystic.
+    # Normal nauplii survival.
+    
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      PCF.nau <- hedge_value[k] # Proportion of females reproducing with Cysts each brood
+      PNF.nau <- 1-PCF.nau # Proportion of females reproducing with Nauplii each brood
+      NSR.nau <- 0.7 # Nauplii survival rates between 5-day brood cycles
+    }else{ # When demographic stochasticity is toggled on (1) 
+      PCF.nau <- rtruncnorm(1,0,1,hedge_value[k],0.03) # Proportion of females reproducing with Cysts each brood
+      PNF.nau <- 1-PCF.nau # Proportion of females reproducing with Nauplii each brood
+      NSR.nau <- rtruncnorm(1,0,1,0.7,0.02) # Nauplii survival rates between 5-day brood cycles
+    }
+    
+    TM.nau <- TM.equ
+     
+    TM.nau[1,5] <- ((ASR * CBS) + (NSR * NGR * CBS)) * PCF.nau * OSR # Adult fecundity plus fecundity of   N3 Nauplii that   matured and reproduced between censuses.
+    TM.nau[2,5] <- ((ASR * NBS) + (NSR * NGR * NBS)) * PNF.nau * OSR # Adult fecundity plus fecundity of   N3 Nauplii that   matured and reproduced between censuses.
+    TM.nau[3,2] <- NSR.nau * NGR # N1 to N2
+    TM.nau[4,3] <- NSR.nau * NGR # N2 to N3
+    TM.nau[5,4] <- NSR.nau * NGR # N3 to A
+    
+    
+    # Matrix 2 #
+    ### Cyst-favoured Reproduction Matrix (unfavourable wet conditions) ###
+    # Bigger proportion of cystic broods compared to nauplii.
+    # Reduced nauplii survival.
+  
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      PCF.cys <- 1 # Proportion of females reproducing with Cysts each brood
+      PNF.cys <- 1-PCF.cys # Proportion of females reproducing with Nauplii each brood
+      NSR.cys <- 0.2 # Nauplii survival rates between 5-day brood cycles
+    }else{ # When demographic stochasticity is toggled on (1) 
+      PCF.cys <- rtruncnorm(1,0,1,1,0.03) # Proportion of females reproducing with Cysts each brood
+      PNF.cys <- 1-PCF.cys # Proportion of females reproducing with Nauplii each brood
+      NSR.cys <- rtruncnorm(1,0,1,0.2,0.02) # Nauplii survival rates between 5-day brood cycles
+    }
+    
+    TM.cys <- TM.equ
+    
+    TM.cys[1,5] <- ((ASR * CBS) + (NSR * NGR * CBS)) * PCF.cys * OSR # Adult fecundity plus fecundity of   N3 Nauplii that matured and reproduced between censuses.
+    TM.cys[2,5] <- ((ASR * NBS) + (NSR * NGR * NBS)) * PNF.cys * OSR # Adult fecundity plus fecundity of   N3 Nauplii that matured and reproduced between censuses.
+    TM.cys[3,2] <- NSR.cys * NGR # N1 to N2
+    TM.cys[4,3] <- NSR.cys * NGR # N2 to N3
+    TM.cys[5,4] <- NSR.cys * NGR # N3 to A
+    
+    
+    # Matrix 3 #
+    
+    
+    ### Cysts-favoured Reproduction Matrix (lagging in favourable wet conditions) ###
+    # Immediately after switch from Unfavourable to Favourable conditions
+    # Bigger proportion of cystic broods compared to naupliar
+    # Normal nauplii survival.
+    
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      PCF.cys.lag <- 1 # Proportion of females reproducing with Cysts each brood
+      PNF.cys.lag <- 1-PCF.cys.lag # Proportion of females reproducing with Nauplii each brood
+      NSR.cys.lag <- 0.7 # Nauplii survival rates between 5-day brood cycles
+    }else{ # When demographic stochasticity is toggled on (1) 
+      PCF.cys.lag <- rtruncnorm(1,0,1,1,0.03) # Proportion of females reproducing with Cysts each brood
+      PNF.cys.lag <- 1-PCF.cys.lag # Proportion of females reproducing with Nauplii each brood
+      NSR.cys.lag <- rtruncnorm(1,0,1,0.7,0.02) # Nauplii survival rates between 5-day brood cycles
+    }
+    
+    TM.cys.lag <- TM.equ
+     
+    TM.cys.lag[1,5] <- ((ASR * CBS) + (NSR * NGR * CBS)) * PCF.cys.lag * OSR # Adult fecundity plus   fecundity of N3 Nauplii that   matured and reproduced between censuses.
+    TM.cys.lag[2,5] <- ((ASR * NBS) + (NSR * NGR * NBS)) * PNF.cys.lag * OSR # Adult fecundity plus   fecundity of N3 Nauplii that   matured and reproduced between censuses.
+    TM.cys.lag[3,2] <- NSR.cys.lag * NGR # N1 to N2
+    TM.cys.lag[4,3] <- NSR.cys.lag * NGR # N2 to N3
+    TM.cys.lag[5,4] <- NSR.cys.lag * NGR # N3 to A
+  
+    
+    
+    # Matrix 4 #
+    ### Nauplii-favoured Reproduction Matrix (lagging in unfavourable wet conditions) ###
+    # Immediately after switch from Favourable to Unfavourable conditions
+    # Bigger proportion of naupliar broods compared to cystic
+    # Reduced nauplii survival.
+    
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      PCF.nau.lag <- hedge_value[k] # Proportion of females reproducing with Cysts each brood
+      PNF.nau.lag <- 1-PCF.nau.lag # Proportion of females reproducing with Nauplii each brood
+      NSR.nau.lag <- 0.2 # Nauplii survival rates between 5-day brood cycles
+    }else{ # When demographic stochasticity is toggled on (1) 
+      PCF.nau.lag <- rtruncnorm(1,0,1,hedge_value[k],0.03) # Proportion of females reproducing with Cysts each brood
+      PNF.nau.lag <- 1-PCF.nau.lag # Proportion of females reproducing with Nauplii each brood
+      NSR.nau.lag <- rtruncnorm(1,0,1,0.2,0.02) # Nauplii survival rates between 5-day brood cycles
+    }
+    
+    TM.nau.lag <- TM.equ
+     
+    TM.nau.lag[1,5] <- ((ASR * CBS) + (NSR * NGR * CBS)) * PCF.nau.lag * OSR # Adult fecundity plus   fecundity of N3 Nauplii that   matured and reproduced between censuses.
+    TM.nau.lag[2,5] <- ((ASR * NBS) + (NSR * NGR * NBS)) * PNF.nau.lag * OSR # Adult fecundity plus   fecundity of N3 Nauplii that   matured and reproduced between censuses.
+    TM.nau.lag[3,2] <- NSR.nau.lag * NGR # N1 to N2
+    TM.nau.lag[4,3] <- NSR.nau.lag * NGR # N2 to N3
+    TM.nau.lag[5,4] <- NSR.nau.lag * NGR # N3 to A
+  
+    
+    
+    
+    # Matrix 5 #
+    ### Catastrophic Matrix (completely dry conditions) ###
+    # Requires only survival of cysts. Nauplii and Adults completely die off
+    
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      CSR.Cat <- 0.8 # Survival of cysts during completely dry condition (of unknown time)
+    }else{ # When demographic stochasticity is toggled on (1) 
+      CSR.Cat <- rtruncnorm(1,0,1,0.8,0.03) # Survival of cysts during completely dry condition (of   unknown time)
+    }
+    
+    TM.Cat <- trans.mat # Empty matrix. No survival of non-cysts stages, other parameters are not relevant because all transition matrix cells for other stages evaluate to 0 when survival is 0.
+    
+    TM.Cat[1,1] <- CSR.Cat * (1-CHR)
+    
+    
+    # Matrix 6 #
+    ### Post-Catastrophe Matrix (cysts hatching in new wet conditions) ###
+    # Requires only hatching of cysts, and cyst survival.
+    
+    if(demog.stoch == 0){ # When demographic stochasticity is toggled off (0)
+      CSR.Post.Cat <- 0.995
+      CHR.Post.Cat <- 0.6
+    }else{ # When demographic stochasticity is toggled on (1)
+      CSR.Post.Cat <- rtruncnorm(1,0,1,0.995,0.001)
+      CHR.Post.Cat <- rtruncnorm(1,0,1,0.6,0.03)
+    }
+    
+    TM.Post.Cat <- trans.mat # Empty matrix. Other parameters and transitions are not relevant because there are nothing but cysts remaining, which survive, and then either hatch or don't
+    
+    TM.Post.Cat[1,1] <- CSR.Post.Cat * (1-CHR.Post.Cat)
+    TM.Post.Cat[2,1] <- CSR.Post.Cat * CHR.Post.Cat
+      
+    
+    
+    # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+    # # # # # Sets Environment for time-steps # # # # # # # 
+    # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+    
+    # Matrix set selected is based on whether a catastrophic, favourable, or unfavourable time-step.
+    # The length of a wet period can vary, but is usually around 6(?) months
+    # i.e. 36 x 5-day broods before a catastrophic drought occurs. 
+    # Within the wet period, length of favourable and unfavourable conditions can vary. 
+    
+    # Default environmental condition after catastrophe or initiation is "favourable"
+    # Otherwise favourable or unfavourable condition is inherited from last time-step
+    if(env.curr == "catastrophe"){
+      env.curr <- "favourable" #Sets a number of broods time-steps until next
+      next.catastrophe <- rtruncnorm(1,1,61,MEAN.cat,SD.cat) # Bounds=1-61 brood cycles ( = 1yr)
+      next.switch.env <- rtruncnorm(1,1,61,MEAN.switch,SD.switch) # Bounds=1-61 brood cycles ( = 1yr) 
+      switch.env <- 0
+      } 
+    time.since.catastrophe <- time.since.catastrophe+1
+    time.since.switch <- time.since.switch+1
+    
+    
+    # Probability of change in environment based on a mean and SD duration of favourable and unfavourable   periods
+    # 1 switches every brood # 0 never switches 
+    
+    if(time.since.switch >= next.switch.env){
+      switch.env <- 1    
+    }
+    if(switch.env == 1 & env.curr == "favourable"){
+      new.env.curr <- "unfavourable"
+    }  
+    if(switch.env == 1 & env.curr == "unfavourable"){
+      new.env.curr <- "favourable"
+    }
+    if(switch.env == 1){
+      env.curr <- new.env.curr
+      time.since.switch <- 0
+      next.switch.env <- rtruncnorm(1,1,61,MEAN.switch,SD.switch) # Bounds=1-61 brood cycles ( = 1yr)
+      switch.env <- 0
+    }
+  
+    # Overwrites environment if a catastrophic drought arrives
+    # Only enters catastrophic event if last environment was unfavourable (and not NA at initiation)
+    if(cat.stoch == 1 &
+       time.since.catastrophe >= next.catastrophe & 
+       (!is.na(env.hist[length(env.hist)]) & env.hist[length(env.hist)] == "unfavourable")){
+      env.curr <- "catastrophe"
+      time.since.catastrophe <- 0
+      time.since.switch <- 0
+      } 
+      
+    # Overwrites to always have favourable environment when environmental stochasticity is switched off
+    if(env.stoch == 0){
+      env.curr <- "favourable"
+      time.since.switch <- response.broods+1 # line only to ensure no-lag matrices are used
+      }
+    
+    
+    
+    # # # # # # # # # # # # # # # # # # # # # # # # # 
+    # # # # # # Matrix Multiplication # # # # # # # #
+    # # # # # # # # # # # # # # # # # # # # # # # # # 
+    
+    # Correct matrix multiplication is chosen based on current environment
+    
+    if(env.curr == "catastrophe"){
+      # # # # Catastrophic Matrix Set # # # #
+      Pt <- TM.Cat %*% Pt 
+      Pt <- floor(Pt)
+      t <- t+1
+      n.t <- c(n.t,t)
+      Pop_size <- rbind(Pop_size,as.vector(Pt))
+      lambda <- popbio::lambda(TM.Cat)
+      lambda.t <- c(lambda.t,lambda)
+      
+      Pt <- TM.Post.Cat %*% Pt
+      Pt <- floor(Pt)
+      t <- t+1
+      n.t <- c(n.t,t)
+      Pop_size <- rbind(Pop_size,as.vector(Pt))
+      lambda <- popbio::lambda(TM.Post.Cat)
+      lambda.t <- c(lambda.t,lambda)
+      # # # # # #
+    }
+    
+    if(env.curr == "favourable"){
+      if(time.since.switch <= response.broods){
+        # # # # # # Lagging Cystic-Favoured Set # # # #
+        Pt  <- TM.cys.lag %*% Pt
+        Pt <- floor(Pt)
+        t <- t+1
+        n.t <- c(n.t,t)
+        Pop_size <- rbind(Pop_size,as.vector(Pt))
+        lambda <- popbio::lambda(TM.cys.lag)
+        lambda.t <- c(lambda.t,lambda)
+        # # # # # #
+      }else{
+        # # # # # # Nauplii-Favoured Set # # # #
+        Pt  <- TM.nau %*% Pt
+        Pt <- floor(Pt)
+        t <- t+1
+        n.t <- c(n.t,t)
+        Pop_size <- rbind(Pop_size,as.vector(Pt))
+        lambda <- popbio::lambda(TM.nau)
+        lambda.t <- c(lambda.t,lambda)
+        # # # # # #
+      }
+    }
+    
+    if(env.curr == "unfavourable"){
+      if(time.since.switch <= response.broods){
+        # # # # # # Lagging Naupliar-Favoured Set # # # #
+        Pt  <- TM.nau.lag %*% Pt
+        Pt <- floor(Pt)
+        t <- t+1
+        n.t <- c(n.t,t)
+        Pop_size <- rbind(Pop_size,as.vector(Pt))
+        lambda <- popbio::lambda(TM.nau.lag)
+        lambda.t <- c(lambda.t,lambda)
+        # # # # # #
+      }else{
+        # # # # # # Cystic-Favoured Set # # # # #
+        Pt  <- TM.cys %*% Pt
+        Pt <- floor(Pt)
+        t <- t+1
+        n.t <- c(n.t,t)
+        Pop_size <- rbind(Pop_size,as.vector(Pt))
+        lambda <- popbio::lambda(TM.cys)
+        lambda.t <- c(lambda.t,lambda)
+        # # # # # # # 
+      }
+    }
+    
+    if(env.curr == "catastrophe"){
+      brood.cycle <- 0 # Resets brood cycle count after catastrophe
+      brood.hist <- c(brood.hist, brood.cycle) # Adds an extra entry for the Post.Cat t
+      env.hist <- c(env.hist,env.curr) # Adds an extra entry for the Post.Cat t
+      }else{ 
+      brood.cycle <- brood.cycle + 1} # Adds 1 to the brood sequence count
+    brood.hist <- c(brood.hist, brood.cycle) # Records brood number
+    env.hist <- c(env.hist,env.curr) # Records environment
+    
+    if(t > t.max){break}
+  
+  }
+
+  # # # # # Data Agreggation # # # # # # 
+  
+  Pop_size <- as.data.frame(Pop_size)
+  colnames(Pop_size) <- c("C", "N1", "N2","N3","A")
+  Pop_size$P <- Pop_size$C + Pop_size$N1 + Pop_size$N2 + Pop_size$N3 + Pop_size$A
+  Pop_size$Time <- n.t
+  Pop_size$Brood.hist <- brood.hist
+  Pop_size$Env.hist <- env.hist
+  Pop_size$Lambda <- lambda.t
+
+  stoch.lambda <- exp((log(Pop_size$P[length(Pop_size$P)]) - log(Pop_size$P[1])) / length(Pop_size$P))
+  Pop_size$Stoch.Lambda <- stoch.lambda
+    
+  # Simulation set values logged in output
+  Pop_size$Simulation <- sim
+  Pop_size$Mean.Cat <- MEAN.cat
+  Pop_size$SD.Cat <- SD.cat
+  Pop_size$Mean.Switch <- MEAN.switch
+  Pop_size$SD.Switch <- SD.switch
+  Pop_size$demog.stoch <- demog.stoch
+  Pop_size$env.stoch <- env.stoch
+  Pop_size$cat.stoch <- cat.stoch    
+  Pop_size$BH_value <- hedge_value[k]
+  
+  rownames(Pop_size) <- c(1: nrow(Pop_size))
+
+  
+  # # # # # # 
+  
+  sim.out[[j]] <- Pop_size
+  print(paste(hedge_value[k],sim))
+    
+  } 
+  hedge.out[[k]] <- do.call(rbind, sim.out)
+}
+  
+hedge.out <- do.call(rbind, hedge.out)
+```
+
+```{r}
+
+hedge.out
+
+saveRDS(hedge.out, "./Simulation_Outputs/Artemia_MPM_v6.0_Scen3.9_200Sims.rds")
+
+readRDS(file = "./Simulation_Outputs/Artemia_MPM_v5.0_Scen1.1_200Sims.rds")
+
+# str(hedge.out)
+# head(Pop_size, n = 200L)
+```
+
+
+## Plot of Sample Simulation ##
+```{r}
+
+# # # # # Data for Plotting # # # # # #
+plot.data1 <- Pop_size[,c("C","Time")]
+plot.data2 <- Pop_size[,c("N1","Time")]
+plot.data3 <- Pop_size[,c("N2","Time")]
+plot.data4 <- Pop_size[,c("N3","Time")]
+plot.data5 <- Pop_size[,c("A","Time")]
+
+colnames(plot.data1) <- c("Size","Time")
+plot.data1$State <- "C"
+colnames(plot.data2) <- c("Size","Time")
+plot.data2$State <- "N1"
+colnames(plot.data3) <- c("Size","Time")
+plot.data3$State <- "N2"
+colnames(plot.data4) <- c("Size","Time")
+plot.data4$State <- "N3"
+colnames(plot.data5) <- c("Size","Time")
+plot.data5$State <- "A"
+
+plot.data <- rbind(plot.data1, plot.data2, plot.data3, plot.data4, plot.data5)
+
+# Plot on normal scale is meaningless.
+# ggplot(plot.data, aes(x=Time, y=Size, group = State, colour = State))+
+#   geom_line()
+
+ggplot(plot.data, aes(x=Time, y=log(Size), group = State, colour = State))+
+  geom_line()
+
+# # # # # 
+
+```
+```{r}
+
+# Instantaneous finite population growth rate through projection, with stochastic finite population growth rate  
+
+ggplot(Pop_size[-1,], aes(x=Time, y=Lambda))+
+  geom_line(colour = "blue", alpha = 0.5)+
+  geom_hline(aes(yintercept = stoch.lambda),linewidth = 1.2, linetype = 2)
+  
+```
