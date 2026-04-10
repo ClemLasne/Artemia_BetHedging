@@ -6,6 +6,6 @@ This repository includes all the scripts and commands used by the authors. If an
 
 Below is a rough guide to the content of each file/folder:
 
-1. [Genome Assembly](link_to.md) 
-2. [Coverage Analysis](link_to.md)
+1. [Population Matrix Modelling](Population_Matrix_Modelling) 
+2. [Gene expression analysis](link_to.md)
 
