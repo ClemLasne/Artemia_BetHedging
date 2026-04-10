@@ -1,6 +1,6 @@
 ### In R
 
-```ruby
+```r
 library(tidyverse)
 library(ggpubr)
 
